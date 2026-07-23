@@ -64,6 +64,25 @@ def test_due_now_and_scoring_pairs(db):
     assert db.resolved_pairs() == [(0.75, True)]  # latest confidence; void never scores
 
 
+def test_resolve_with_evidence_round_trips(db):
+    pid = db.state_claim("global temps set a record this year", 0.8)
+    cite = {"kind": "almanac-data", "vertical": "climate-almanac",
+            "entry_id": "berkeley-earth-temperature", "catalog_commit": "b" * 40}
+    db.resolve(pid, True, evidence=cite)
+    r = db.current(pid)
+    assert r["evidence"]["entry_id"] == "berkeley-earth-temperature"
+    assert r["evidence"]["catalog_commit"] == "b" * 40
+    # evidence rides the resolving event: reopen clears it from derived state
+    db.reopen(pid)
+    assert db.current(pid)["evidence"] is None
+
+
+def test_resolve_without_evidence_still_fine(db):
+    pid = db.state_claim("plain grading works", 0.6)
+    db.resolve(pid, True)
+    assert db.current(pid)["evidence"] is None
+
+
 def test_unknown_id_raises(db):
     with pytest.raises(KeyError):
         db.current("nope1234")

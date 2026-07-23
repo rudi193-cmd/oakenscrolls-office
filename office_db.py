@@ -45,9 +45,16 @@ def _db() -> sqlite3.Connection:
             confidence    REAL,
             outcome       INTEGER,
             note          TEXT,
+            evidence      TEXT,
             at            INTEGER NOT NULL
         );
     """)
+    # v0.1 ledgers predate the evidence column; append it in place (the table
+    # itself is append-only, so ALTER ADD COLUMN is the only migration kind
+    # this schema will ever need).
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+    if "evidence" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN evidence TEXT")
     conn.commit()
     return conn
 
@@ -82,15 +89,16 @@ def state_claim(
     return pid
 
 
-def _append(pid: str, kind: str, confidence=None, outcome=None, note=None) -> None:
+def _append(pid: str, kind: str, confidence=None, outcome=None, note=None, evidence=None) -> None:
     with _db() as c:
         exists = c.execute("SELECT 1 FROM predictions WHERE id=?", (pid,)).fetchone()
         if not exists:
             raise KeyError(pid)
         c.execute(
-            "INSERT INTO events (prediction_id, kind, confidence, outcome, note, at) "
-            "VALUES (?,?,?,?,?,?)",
-            (pid, kind, confidence, outcome, note, int(time.time())),
+            "INSERT INTO events (prediction_id, kind, confidence, outcome, note, evidence, at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (pid, kind, confidence, outcome, note,
+             json.dumps(evidence) if evidence is not None else None, int(time.time())),
         )
 
 
@@ -103,10 +111,17 @@ def revise(pid: str, confidence: float) -> None:
     _append(pid, "revised", confidence=confidence)
 
 
-def resolve(pid: str, outcome: bool, note: Optional[str] = None) -> None:
+def resolve(
+    pid: str,
+    outcome: bool,
+    note: Optional[str] = None,
+    evidence: Optional[dict] = None,
+) -> None:
+    """Grade a prediction. `evidence` is an optional citation record (e.g.
+    almanac_seam.citation()) pinned to the resolving event forever."""
     if current(pid)["status"] != "open":
         raise ValueError("only an open prediction can be resolved")
-    _append(pid, "resolved", outcome=1 if outcome else 0, note=note)
+    _append(pid, "resolved", outcome=1 if outcome else 0, note=note, evidence=evidence)
 
 
 def void(pid: str, note: Optional[str] = None) -> None:
@@ -128,15 +143,17 @@ def _derive(pred: sqlite3.Row, events: list[sqlite3.Row]) -> dict:
     confidence = pred["confidence"]
     outcome = None
     resolved_at = None
+    evidence = None
     for e in events:  # chronological
         if e["kind"] == "revised":
             confidence = e["confidence"]
         elif e["kind"] == "resolved":
             status, outcome, resolved_at = "resolved", bool(e["outcome"]), e["at"]
+            evidence = json.loads(e["evidence"]) if e["evidence"] else None
         elif e["kind"] == "voided":
-            status, outcome, resolved_at = "voided", None, e["at"]
+            status, outcome, resolved_at, evidence = "voided", None, e["at"], None
         elif e["kind"] == "reopened":
-            status, outcome, resolved_at = "open", None, None
+            status, outcome, resolved_at, evidence = "open", None, None, None
     return {
         "id": pred["id"],
         "claim": pred["claim"],
@@ -148,6 +165,7 @@ def _derive(pred: sqlite3.Row, events: list[sqlite3.Row]) -> dict:
         "status": status,
         "outcome": outcome,
         "resolved_at": resolved_at,
+        "evidence": evidence,
         "revisions": sum(1 for e in events if e["kind"] == "revised"),
     }
 

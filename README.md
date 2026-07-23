@@ -43,6 +43,7 @@ No Willow checkout, Postgres, or network required — the ledger lives in
 | `t` / `f` | Grade the surfaced due item (or selected row) true / false |
 | `o` | Void — unresolvable or ambiguous; the record is kept |
 | `s` | Snooze the surfaced due item for this session |
+| `e` | Cite & grade — search your local almanac-data clones for the source that settles it, pick one, then `t`/`f` grades with the citation pinned |
 | `c` | Change your mind — revise confidence, old number stays on the record |
 | `Tab` | Cycle view: on the record / graded / scorecard |
 | `q` | Quit |
@@ -56,6 +57,25 @@ Overall Brier and log scores, then the reliability table: for each stated
 band (50–60% … 90–99%), what you said vs. how often you were right. `web.py`
 draws the full diagram — the dotted diagonal is perfect calibration; dots
 below it are overconfidence.
+
+## Citing the almanacs (optional)
+
+World-facing predictions deserve receipts. If you keep local clones of the
+[almanac-data](https://github.com/almanac-data) catalogs ("catalog, don't
+host" — versioned pointers to authoritative public datasets), press `e` when
+grading and the Office searches them for the source that settles the claim.
+The resolution then carries a citation forever: vertical, entry, publisher,
+canonical URL, and the **git commit of the catalog that vouched** — read
+straight from the clone's `.git` files, no git binary, no network.
+
+    git clone https://github.com/almanac-data/climate-almanac ~/github/almanac-data/climate-almanac
+    # ...and whichever other verticals you care about
+    ALMANAC_DATA_ROOT=~/github/almanac-data   # this is the default
+
+Cited grades show a `†` in the graded view; `/ledger.json` on the mirror
+carries the full evidence records. The seam reads local files only — it lives
+*inside* the no-egress zone, because pointing at the world's data must never
+mean touching the network.
 
 ## Willow seams (optional, off by default)
 

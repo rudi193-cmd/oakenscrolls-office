@@ -5,7 +5,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-NO_EGRESS_MODULES = ("office_db.py", "office_paths.py", "calibration.py")
+NO_EGRESS_MODULES = ("office_db.py", "office_paths.py", "calibration.py", "almanac_seam.py")
 FORBIDDEN = {
     "socket", "http", "urllib", "requests", "httpx", "aiohttp", "ftplib",
     "smtplib", "telnetlib", "xmlrpc", "webbrowser",

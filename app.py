@@ -14,6 +14,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
+import almanac_seam
 import calibration
 import office_db as db
 
@@ -82,6 +83,7 @@ class OfficeApp(App):
         Binding("f", "resolve_false", "False"),
         Binding("o", "resolve_void", "Void"),
         Binding("s", "snooze", "Snooze"),
+        Binding("e", "cite", "Cite & grade"),
         Binding("c", "revise", "Change mind"),
         Binding("tab", "cycle_view", "View", priority=True),
         Binding("q", "quit", "Quit"),
@@ -90,10 +92,12 @@ class OfficeApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.view = "open"
-        self.mode: Optional[str] = None    # None | claim | confidence | due | revise
+        self.mode: Optional[str] = None    # None | claim | confidence | due | revise | cite
         self.draft: dict = {}
         self.dew: list[dict] = []          # due predictions awaiting the person
         self.snoozed: set[str] = set()
+        self.citing_pid: Optional[str] = None   # cite-and-grade in progress
+        self.candidates: list[dict] = []        # almanac sources on the board
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -106,9 +110,7 @@ class OfficeApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        board = self.query_one("#board", DataTable)
-        board.cursor_type = "row"
-        board.add_columns("conf", "claim", "due", "age", "rev")
+        self.query_one("#board", DataTable).cursor_type = "row"
         self.reload_dew()
         self.refresh_all()
 
@@ -139,7 +141,11 @@ class OfficeApp(App):
         self.render_dew()
         board = self.query_one("#board", DataTable)
         card = self.query_one("#card", Static)
-        if self.view == "scorecard":
+        if self.citing_pid and self.candidates:
+            board.display = True
+            card.remove_class("visible")
+            self.render_candidates()
+        elif self.view == "scorecard":
             board.display = False
             card.add_class("visible")
             card.update(self.scorecard_text())
@@ -149,9 +155,23 @@ class OfficeApp(App):
             self.render_board()
         self.render_status()
 
+    def render_candidates(self) -> None:
+        """The pick board: almanac sources matching the cite query. Selecting
+        one and pressing t/f grades the prediction with that citation."""
+        board = self.query_one("#board", DataTable)
+        board.clear(columns=True)
+        board.add_columns("vertical", "source", "publisher", "status")
+        for i, c in enumerate(self.candidates):
+            board.add_row(
+                c["vertical"], c["title"] or c["entry_id"], c["publisher"] or "—",
+                c["status"] or "?", key=str(i),
+            )
+        board.focus()
+
     def render_board(self) -> None:
         board = self.query_one("#board", DataTable)
-        board.clear()
+        board.clear(columns=True)  # the cite flow swaps the column set
+        board.add_columns("conf", "claim", "due", "age", "rev")
         if self.view == "open":
             for r in db.ledger("open"):
                 board.add_row(
@@ -164,6 +184,8 @@ class OfficeApp(App):
                 if r["status"] == "open":
                     continue
                 verdict = "VOID" if r["status"] == "voided" else ("✓" if r["outcome"] else "✗")
+                if r["evidence"]:
+                    verdict += " †"  # graded with a citation
                 board.add_row(
                     f"{r['confidence']:.0%}", r["claim"], verdict,
                     when(r["resolved_at"]).lstrip("-"), str(r["revisions"]),
@@ -205,6 +227,12 @@ class OfficeApp(App):
         return "\n".join(lines)
 
     def render_status(self) -> None:
+        if self.citing_pid and self.candidates:
+            claim = db.current(self.citing_pid)["claim"]
+            self.query_one("#status", Static).update(
+                f"Citing for: “{claim}” — pick a source, then [b]t[/b]/[b]f[/b] · Esc cancels"
+            )
+            return
         n_open = len(db.ledger("open"))
         n_res = len(db.ledger("resolved"))
         self.query_one("#status", Static).update(
@@ -271,13 +299,41 @@ class OfficeApp(App):
                     db.revise(pid, parse_confidence(text))
                 self.close_input()
                 self.refresh_all()
+            elif self.mode == "cite":
+                if not text:
+                    self.citing_pid = None
+                    self.close_input()
+                    self.refresh_all()
+                    return
+                found = almanac_seam.search(text)
+                if not found:
+                    box = self.query_one("#capture", Input)
+                    box.placeholder = (
+                        "nothing matched in the local almanacs — refine, or Esc to grade unciteds"
+                        if almanac_seam.verticals()
+                        else "no local almanac clones found (set ALMANAC_DATA_ROOT) — Esc cancels"
+                    )
+                    box.value = ""
+                    return
+                self.candidates = found
+                self.close_input()
+                self.refresh_all()
         except (ValueError, KeyError) as err:
             self.query_one("#capture", Input).placeholder = f"{err} — try again, Esc cancels"
             self.query_one("#capture", Input).value = ""
 
     def on_key(self, event) -> None:
-        if self.mode and event.key == "escape":
+        if event.key != "escape":
+            return
+        if self.mode:
+            if self.mode == "cite":
+                self.citing_pid = None
             self.close_input()
+            self.refresh_all()
+        elif self.citing_pid:
+            self.citing_pid = None
+            self.candidates = []
+            self.refresh_all()
 
     # ---------- actions ----------
 
@@ -287,6 +343,24 @@ class OfficeApp(App):
 
     def _grade(self, outcome: Optional[bool], voided: bool = False) -> None:
         if self.mode:
+            return
+        if self.citing_pid and self.candidates:
+            if voided:  # a void needs no citation
+                return
+            picked = self.selected_id()
+            try:
+                candidate = self.candidates[int(picked)]
+            except (TypeError, ValueError, IndexError):
+                return
+            try:
+                db.resolve(self.citing_pid, bool(outcome),
+                           evidence=almanac_seam.citation(candidate))
+            except (ValueError, KeyError):
+                pass
+            self.citing_pid = None
+            self.candidates = []
+            self.reload_dew()
+            self.refresh_all()
             return
         pid = self.target_id()
         if not pid:
@@ -309,6 +383,17 @@ class OfficeApp(App):
 
     def action_resolve_void(self) -> None:
         self._grade(None, voided=True)
+
+    def action_cite(self) -> None:
+        """Cite & grade: search the local almanac-data clones for the source
+        that settles this claim, then t/f with the citation pinned."""
+        if self.mode or self.citing_pid:
+            return
+        pid = self.target_id()
+        if not pid:
+            return
+        self.citing_pid = pid
+        self.open_input("cite", "Which source settles it? Search the local almanacs — Esc cancels")
 
     def action_snooze(self) -> None:
         item = self.active_due()

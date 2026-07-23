@@ -119,6 +119,8 @@ def handle(method: str, path: str) -> tuple[int, str, str]:
             "summary": calibration.summary(pairs),
             "bins": calibration.bins(pairs),
         })
+    if path == "/ledger.json":
+        return 200, _JSON, json.dumps(db.ledger())  # includes citation evidence
     return 404, _HTML, "not found"
 
 
