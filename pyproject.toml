@@ -10,6 +10,10 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
     "textual>=0.47.0",
+    # Nestor's verified-match engine backs almanac_seam's fuzzy citation
+    # fallback (stdlib-only; no egress). Repin to a tag/main once the Nestor
+    # branch merges.
+    "nestor @ git+https://github.com/rudi193-cmd/Nestor@claude/new-ledger-piece-e3vxvn",
 ]
 
 [project.scripts]
