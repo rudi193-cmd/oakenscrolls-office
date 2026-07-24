@@ -13,7 +13,7 @@ dependencies = [
     # Nestor's verified-match engine backs almanac_seam's fuzzy citation
     # fallback (stdlib-only; no egress). Repin to a tag/main once the Nestor
     # branch merges.
-    "nestor @ git+https://github.com/rudi193-cmd/Nestor@claude/new-ledger-piece-e3vxvn",
+    "nestor @ git+https://github.com/rudi193-cmd/Nestor@master",
 ]
 
 [project.scripts]
