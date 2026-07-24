@@ -21,6 +21,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from nestor.matcher import StringMatcher
+
+# Nestor's string matcher backs the fuzzy fallback in search(). It is stdlib-only
+# (difflib) — importing it pulls no network, so this module stays inside the
+# no-egress zone (verified by tests/test_no_egress.py; 'nestor' is not forbidden).
+_MATCHER = StringMatcher()
+# Minimum title/id/publisher similarity for a fuzzy citation to surface.
+_FUZZY_THRESHOLD = 0.55
+
 
 def almanac_root() -> Path:
     return Path(
@@ -77,14 +86,49 @@ def _entry_text(entry: dict) -> str:
     return " ".join(parts).lower()
 
 
+def _candidate(v: dict, entry: dict) -> dict:
+    """The citation candidate a matched entry yields — provenance included."""
+    source = entry.get("source") or {}
+    return {
+        "vertical": v["name"],
+        "entry_id": entry.get("id"),
+        "title": entry.get("title"),
+        "publisher": entry.get("publisher"),
+        "canonical_url": source.get("canonical_url"),
+        "status": entry.get("status"),
+        "license": entry.get("license"),
+        "catalog_commit": v["commit"],
+    }
+
+
+def _fuzzy_score(query_norm: str, entry: dict) -> float:
+    """Best Nestor similarity of the query against the entry's SHORT fields
+    (title / id / publisher). Short-vs-short is where difflib is meaningful —
+    unlike the concatenated blob — so a reworded or misspelled claim can still
+    find its source."""
+    best = 0.0
+    for field in (entry.get("title"), entry.get("id"), entry.get("publisher")):
+        if field:
+            best = max(best, _MATCHER.similarity(query_norm, _MATCHER.normalize(field)))
+    return best
+
+
 def search(query: str, limit: int = 8) -> list[dict]:
-    """Match query tokens (AND) against entry id/title/description/publisher/
-    topics across every local vertical. Live sources rank above frozen/dead.
-    Returns citation candidates; empty list when no clones exist."""
+    """Match a claim against local almanac-data catalogs, returning citation
+    candidates with provenance.
+
+    Exact token-AND (id/title/description/publisher/topics) is AUTHORITATIVE and
+    ranks live sources first — behavior unchanged. Only when NO entry matches
+    exactly does a Nestor StringMatcher fuzzy fallback surface the closest
+    sources by title/id/publisher similarity, so a reworded or misspelled claim
+    ('berkely erth temprature') still finds its evidence. Empty list when no
+    clones exist."""
     tokens = [t for t in query.lower().split() if t]
     if not tokens:
         return []
-    hits = []
+    exact: list[dict] = []
+    fuzzy: list[tuple[float, dict]] = []
+    query_norm = _MATCHER.normalize(query)
     for v in verticals():
         try:
             catalog = json.loads((v["path"] / "catalog.json").read_text())
@@ -93,19 +137,18 @@ def search(query: str, limit: int = 8) -> list[dict]:
         for entry in catalog.get("entries", []):
             text = _entry_text(entry)
             if all(t in text for t in tokens):
-                source = entry.get("source") or {}
-                hits.append({
-                    "vertical": v["name"],
-                    "entry_id": entry.get("id"),
-                    "title": entry.get("title"),
-                    "publisher": entry.get("publisher"),
-                    "canonical_url": source.get("canonical_url"),
-                    "status": entry.get("status"),
-                    "license": entry.get("license"),
-                    "catalog_commit": v["commit"],
-                })
-    hits.sort(key=lambda h: (h["status"] != "live", h["vertical"], h["entry_id"] or ""))
-    return hits[:limit]
+                exact.append(_candidate(v, entry))
+            else:
+                score = _fuzzy_score(query_norm, entry)
+                if score >= _FUZZY_THRESHOLD:
+                    fuzzy.append((score, _candidate(v, entry)))
+    if exact:
+        exact.sort(key=lambda h: (h["status"] != "live", h["vertical"], h["entry_id"] or ""))
+        return exact[:limit]
+    # Fuzzy fallback — fires only when nothing matched exactly. Live sources
+    # first, then by descending similarity.
+    fuzzy.sort(key=lambda sc: (sc[1]["status"] != "live", -sc[0], sc[1]["vertical"]))
+    return [cand for _, cand in fuzzy][:limit]
 
 
 def citation(candidate: dict, note: Optional[str] = None) -> dict:
